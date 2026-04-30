@@ -51,21 +51,7 @@ jobs:
           DIFF=$(git diff "$BASE_SHA" "$HEAD_SHA" -- '*.tsx' '*.jsx' '*.html')
           echo "$DIFF" > /tmp/a11y-diff.patch
 
-      # ── 3. Post initial status comment on the PR ────────────────────────
-      - name: Post status comment
-        if: steps.filter.outputs.skip != 'true'
-        id: comment
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          BODY="**Devin a11y triage** — Evaluating this PR for accessibility concerns..."
-          gh pr comment "$PR_NUMBER" \
-            --body "$BODY" \
-            --repo "$GH_REPO"
-
-      # ── 4. Build the Devin session prompt ───────────────────────────────
+      # ── 3. Build the Devin session prompt ───────────────────────────────
       - name: Build Devin session prompt
         if: steps.filter.outputs.skip != 'true'
         id: prompt
