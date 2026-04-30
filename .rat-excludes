@@ -77,6 +77,9 @@ erd.svg
 intro_header.txt
 TODO.md
 
+# Devin a11y action prompts
+prompts/*
+
 # for LLMs
 llm-context.md
 llms.txt
