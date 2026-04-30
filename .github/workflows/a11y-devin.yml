@@ -140,7 +140,7 @@ jobs:
           DEVIN_ORG_ID: ${{ secrets.DEVIN_ORG_ID }}
           SESSION_ID: ${{ steps.devin.outputs.session_id }}
         run: |
-          MAX_POLLS=60
+          MAX_POLLS=20
           POLL_INTERVAL=30
 
           for i in $(seq 1 $MAX_POLLS); do
@@ -168,6 +168,20 @@ jobs:
                 echo "::warning::Devin session was suspended ($STATUS_DETAIL)."
                 echo "final_status=suspended" >> "$GITHUB_OUTPUT"
                 break
+                ;;
+              running)
+                # The v3 API keeps status as "running" even after the task
+                # is done.  Check status_detail for terminal sub-states:
+                #   waiting_for_user — Devin finished and is blocked on
+                #                      human input
+                #   finished         — task marked complete
+                case "$STATUS_DETAIL" in
+                  waiting_for_user|finished)
+                    echo "Session finished (status_detail=$STATUS_DETAIL)."
+                    echo "final_status=success" >> "$GITHUB_OUTPUT"
+                    break
+                    ;;
+                esac
                 ;;
             esac
 
