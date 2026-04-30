@@ -27,7 +27,7 @@ interface BannerProps {
 export default function A11yTestBanner({ title, iconSrc }: BannerProps) {
   return (
     <div className="a11y-test-banner">
-      <img src={iconSrc} />
+      <img src={iconSrc} alt="" />
       <h3>{title}</h3>
     </div>
   );
