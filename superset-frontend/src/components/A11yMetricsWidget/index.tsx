@@ -51,7 +51,7 @@ export default function A11yMetricsWidget() {
       </div>
 
       <div className="widget-actions">
-        <button onClick={() => window.location.reload()}>
+        <button onClick={() => window.location.reload()} aria-label="Refresh">
           <svg viewBox="0 0 24 24" width="16" height="16">
             <path d="M17.65 6.35A7.96 7.96 0 0012 4a8 8 0 108 8h-2a6 6 0 11-6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" />
           </svg>
