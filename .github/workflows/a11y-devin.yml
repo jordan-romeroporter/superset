@@ -1,0 +1,214 @@
+name: a11y-devin
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  a11y-triage:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 0. Checkout so we can inspect the diff ──────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 1. Check if PR contains front-end file changes ──────────────────
+      - name: Check for front-end file changes
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | \
+                    grep -E '\.(tsx|jsx|html)$' || true)
+
+          if [ -z "$CHANGED" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No front-end files changed — skipping a11y triage."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Front-end files changed:"
+            echo "$CHANGED"
+            FILE_LIST=$(echo "$CHANGED" | paste -sd ',' -)
+            echo "files=$FILE_LIST" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 2. Capture the diff of front-end files ─────────────────────────
+      - name: Capture front-end diff
+        if: steps.filter.outputs.skip != 'true'
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          DIFF=$(git diff "$BASE_SHA" "$HEAD_SHA" -- '*.tsx' '*.jsx' '*.html')
+          echo "$DIFF" > /tmp/a11y-diff.patch
+
+      # ── 3. Post initial status comment on the PR ────────────────────────
+      - name: Post status comment
+        if: steps.filter.outputs.skip != 'true'
+        id: comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          BODY="**Devin a11y triage** — Evaluating this PR for accessibility concerns..."
+          gh pr comment "$PR_NUMBER" \
+            --body "$BODY" \
+            --repo "$GH_REPO"
+
+      # ── 4. Build the Devin session prompt ───────────────────────────────
+      - name: Build Devin session prompt
+        if: steps.filter.outputs.skip != 'true'
+        id: prompt
+        env:
+          PR_FILES: ${{ steps.filter.outputs.files }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          DIFF=$(cat /tmp/a11y-diff.patch)
+
+          PROMPT=$(cat prompts/devin-a11y-session.md)
+          PROMPT=$(echo "$PROMPT" | sed "s|{{REPO}}|$GH_REPO|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{PR_NUMBER}}|$PR_NUMBER|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{PR_URL}}|$PR_URL|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{FILES}}|$PR_FILES|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{BASE_BRANCH}}|$BASE_BRANCH|g")
+          PROMPT=$(echo "$PROMPT" | sed "s|{{HEAD_BRANCH}}|$HEAD_BRANCH|g")
+
+          PROMPT="$PROMPT
+
+          --- BEGIN DIFF ---
+          $DIFF
+          --- END DIFF ---"
+
+          echo "$PROMPT" > /tmp/devin-prompt.txt
+
+      # ── 5. Create Devin v3 session ──────────────────────────────────────
+      - name: Create Devin session
+        if: steps.filter.outputs.skip != 'true'
+        id: devin
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          DEVIN_ORG_ID: ${{ secrets.DEVIN_ORG_ID }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          PROMPT=$(cat /tmp/devin-prompt.txt)
+
+          PAYLOAD=$(jq -n \
+            --arg prompt "$PROMPT" \
+            --arg repo "$GH_REPO" \
+            '{
+              prompt: $prompt,
+              repos: [$repo],
+              tags: ["a11y-triage", "github-action"]
+            }')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://api.devin.ai/v3/organizations/$DEVIN_ORG_ID/sessions" \
+            -H "Authorization: Bearer $DEVIN_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "::error::Devin API returned HTTP $HTTP_CODE: $BODY"
+            exit 1
+          fi
+
+          SESSION_ID=$(echo "$BODY" | jq -r '.session_id')
+          SESSION_URL=$(echo "$BODY" | jq -r '.url')
+
+          echo "session_id=$SESSION_ID" >> "$GITHUB_OUTPUT"
+          echo "session_url=$SESSION_URL" >> "$GITHUB_OUTPUT"
+          echo "Devin session created: $SESSION_URL"
+
+      # ── 6. Poll Devin session until terminal state ──────────────────────
+      - name: Poll Devin session
+        if: steps.filter.outputs.skip != 'true'
+        id: poll
+        env:
+          DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
+          DEVIN_ORG_ID: ${{ secrets.DEVIN_ORG_ID }}
+          SESSION_ID: ${{ steps.devin.outputs.session_id }}
+        run: |
+          MAX_POLLS=60
+          POLL_INTERVAL=30
+
+          for i in $(seq 1 $MAX_POLLS); do
+            RESPONSE=$(curl -s \
+              "https://api.devin.ai/v3/organizations/$DEVIN_ORG_ID/sessions/$SESSION_ID" \
+              -H "Authorization: Bearer $DEVIN_API_KEY")
+
+            STATUS=$(echo "$RESPONSE" | jq -r '.status')
+            STATUS_DETAIL=$(echo "$RESPONSE" | jq -r '.status_detail // empty')
+
+            echo "Poll $i/$MAX_POLLS — status=$STATUS detail=$STATUS_DETAIL"
+
+            case "$STATUS" in
+              exit)
+                echo "Session completed successfully."
+                echo "final_status=success" >> "$GITHUB_OUTPUT"
+                break
+                ;;
+              error)
+                echo "::warning::Devin session ended with error."
+                echo "final_status=error" >> "$GITHUB_OUTPUT"
+                break
+                ;;
+              suspended)
+                echo "::warning::Devin session was suspended ($STATUS_DETAIL)."
+                echo "final_status=suspended" >> "$GITHUB_OUTPUT"
+                break
+                ;;
+            esac
+
+            if [ "$i" -eq "$MAX_POLLS" ]; then
+              echo "::warning::Polling timed out after $((MAX_POLLS * POLL_INTERVAL))s."
+              echo "final_status=timeout" >> "$GITHUB_OUTPUT"
+            fi
+
+            sleep $POLL_INTERVAL
+          done
+
+      # ── 7. Post final status update on the PR ──────────────────────────
+      - name: Post final status
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+          SESSION_URL: ${{ steps.devin.outputs.session_url }}
+          FINAL_STATUS: ${{ steps.poll.outputs.final_status }}
+        run: |
+          case "$FINAL_STATUS" in
+            success)
+              BODY="**Devin a11y triage complete.** [View session]($SESSION_URL)"
+              ;;
+            error)
+              BODY="**Devin a11y session encountered an error.** [View session]($SESSION_URL)"
+              ;;
+            suspended)
+              BODY="**Devin a11y session was suspended.** [View session]($SESSION_URL)"
+              ;;
+            *)
+              BODY="**Devin a11y session timed out.** [View session]($SESSION_URL)"
+              ;;
+          esac
+
+          gh pr comment "$PR_NUMBER" \
+            --body "$BODY" \
+            --repo "$GH_REPO"
