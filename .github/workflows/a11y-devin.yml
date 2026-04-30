@@ -86,9 +86,18 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         id: devin
         env:
+          # ── v1 settings (active) ──────────────────────────────────────
           DEVIN_API_KEY: ${{ secrets.DEVIN_API_KEY }}
           DEVIN_ORG_ID: ${{ secrets.DEVIN_ORG_ID }}
           GH_REPO: ${{ github.repository }}
+
+          # ── Roadmap (v2) — uncomment when available ───────────────────
+          # ITERATION_LOOP: "true"              # Devin reads its own revert data to self-correct
+          # RISK_RUBRIC: "medium"               # low = auto-merge | medium = team review | high = a11y-lead review
+          # KNOWLEDGE_ENTRIES: |                 # org-specific a11y conventions persisted across sessions
+          #   - "Use aria-label on all icon-only buttons"
+          #   - "Colour contrast minimum 4.5:1 for body text"
+
         run: |
           PROMPT=$(cat /tmp/devin-prompt.txt)
 
